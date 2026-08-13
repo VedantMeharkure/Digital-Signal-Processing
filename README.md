@@ -1,5 +1,4 @@
 # Digital-Signal-Processing
-# Digital-Signal-Processing
 
 A collection of Digital Image Processing (DIP) mini-projects and exercises implemented in Python (OpenCV, NumPy, Matplotlib) and MATLAB.
 
