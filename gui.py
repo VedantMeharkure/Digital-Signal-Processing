@@ -5,6 +5,7 @@ from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
+import io
 
 
 # ============================================================
@@ -294,8 +295,6 @@ st.image(
     image,
     use_container_width=True
 )
-
-
 # ============================================================
 # RESULT
 # ============================================================
@@ -304,30 +303,85 @@ if "result" in st.session_state:
 
     result = st.session_state["result"]
 
-    st.subheader("Result")
+    # ----------------------------------------
+    # Compression operation
+    # ----------------------------------------
 
+    if isinstance(result, dict):
 
-    # ========================================
-    # MULTIPLE RESULTS
-    # ========================================
+        processed_image = result["image"]
 
-    if isinstance(result, list):
+        col1, col2 = st.columns(2)
 
-        columns = st.columns(4)
+        with col1:
 
-        for i, plane in enumerate(result):
+            st.image(
+                image,
+                caption="Original",
+                use_container_width=True
+            )
 
-            with columns[i % 4]:
+        with col2:
+
+            st.image(
+                processed_image,
+                caption="Processed / Reconstructed",
+                use_container_width=True
+            )
+
+        st.subheader("Compression Information")
+
+        info1, info2, info3 = st.columns(3)
+
+        with info1:
+
+            st.metric(
+                "Original Bits",
+                f"{result['original_bits']:,}"
+            )
+
+        with info2:
+
+            st.metric(
+                "Compressed Bits",
+                f"{result['compressed_bits']:,}"
+            )
+
+        with info3:
+
+            st.metric(
+                "Compression Ratio",
+                f"{result['compression_ratio']:.2f}"
+            )
+
+        st.write(
+            f"Unique intensity values: "
+            f"{result['unique_values']}"
+        )
+
+    # ----------------------------------------
+    # Multiple images
+    # ----------------------------------------
+
+    elif isinstance(result, list):
+
+        columns = st.columns(
+            len(result)
+        )
+
+        for i, output in enumerate(result):
+
+            with columns[i]:
 
                 st.image(
-                    plane,
-                    caption=f"Bit Plane {i}",
+                    output,
+                    caption=f"Result {i + 1}",
                     use_container_width=True
                 )
 
-    # ========================================
-    # SINGLE RESULT
-    # ========================================
+    # ----------------------------------------
+    # Normal image
+    # ----------------------------------------
 
     else:
 
@@ -419,7 +473,18 @@ with hist_col2:
 
         result = st.session_state["result"]
 
-        if not isinstance(result, list):
+        # Huffman / Shannon-Fano
+        if isinstance(result, dict):
+
+            processed_image = result["image"]
+
+            plot_histogram(
+                processed_image,
+                "Processed Histogram"
+            )
+
+        # Normal image result
+        elif not isinstance(result, list):
 
             plot_histogram(
                 result,
@@ -428,28 +493,24 @@ with hist_col2:
 
 
 # ============================================================
-# DOWNLOAD
+# DOWNLOAD RESULT
 # ============================================================
 
 if "result" in st.session_state:
 
     result = st.session_state["result"]
 
+    # Huffman / Shannon-Fano
+    if isinstance(result, dict):
+
+        result = result["image"]
+
+    # Normal image
     if not isinstance(result, list):
 
-        if len(result.shape) == 2:
-
-            output_image = Image.fromarray(
-                result
-            )
-
-        else:
-
-            output_image = Image.fromarray(
-                result
-            )
-
-        import io
+        output_image = Image.fromarray(
+            result
+        )
 
         buffer = io.BytesIO()
 
@@ -459,7 +520,7 @@ if "result" in st.session_state:
         )
 
         st.download_button(
-            "Download Result",
+            label="Download Result",
             data=buffer.getvalue(),
             file_name="processed_image.png",
             mime="image/png"
