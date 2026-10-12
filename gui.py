@@ -1,103 +1,81 @@
-import streamlit as st
+
+import hashlib
 import importlib.util
-from pathlib import Path
-from PIL import Image
-import numpy as np
-import matplotlib.pyplot as plt
-import cv2
 import io
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import streamlit as st
+from PIL import Image
 
 
 # ============================================================
-# PAGE
+# PAGE CONFIGURATION
 # ============================================================
-
 st.set_page_config(
     page_title="Digital Image Processing",
     layout="wide"
 )
 
-
-# ============================================================
-# SIMPLE CSS
-# ============================================================
-
 st.markdown(
     """
     <style>
-
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
     }
-
     h1 {
         margin-bottom: 0.2rem;
     }
-
     </style>
     """,
     unsafe_allow_html=True
 )
 
-
-# ============================================================
-# TITLE
-# ============================================================
-
 st.title("Digital Image Processing")
-
-st.write(
-    "Upload an image and select an operation."
-)
+st.write("Upload an image and select an operation.")
 
 
 # ============================================================
 # LOAD OPERATIONS
 # ============================================================
-
 OPERATIONS_DIR = Path(__file__).parent / "operations"
 
 
 def load_operations():
-
     operations = []
     errors = []
 
-    for file in OPERATIONS_DIR.glob("*.py"):
+    if not OPERATIONS_DIR.is_dir():
+        return [], [f"Operations folder not found: {OPERATIONS_DIR}"]
 
+    for file in sorted(OPERATIONS_DIR.glob("*.py")):
         if file.name == "__init__.py":
             continue
 
         try:
-
             spec = importlib.util.spec_from_file_location(
-                file.stem,
-                file
+                f"dip_operation_{file.stem}", file
             )
 
-            module = importlib.util.module_from_spec(
-                spec
-            )
+            if spec is None or spec.loader is None:
+                raise ImportError("Could not load module")
 
+            module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
             if not hasattr(module, "NAME"):
-                raise ValueError(
-                    "NAME is missing"
-                )
+                raise ValueError("NAME is missing")
 
-            if not hasattr(module, "apply"):
-                raise ValueError(
-                    "apply() function is missing"
-                )
+            if not callable(getattr(module, "apply", None)):
+                raise ValueError("apply(image, params) is missing")
 
             operations.append(module)
 
-        except Exception as e:
-
+        except Exception as exc:
             errors.append(
-                f"{file.name}: {e}"
+                f"{file.name}: {type(exc).__name__}: {exc}"
             )
 
     return operations, errors
@@ -109,29 +87,18 @@ operations, errors = load_operations()
 # ============================================================
 # SIDEBAR
 # ============================================================
-
 with st.sidebar:
-
     st.header("Options")
 
     uploaded_file = st.file_uploader(
         "Upload Image",
-        type=[
-            "jpg",
-            "jpeg",
-            "png",
-            "bmp",
-            "tif",
-            "tiff"
-        ]
+        type=["jpg", "jpeg", "png", "bmp", "tif", "tiff"]
     )
 
-    if operations:
+    selected_operation = None
 
-        operation_names = [
-            operation.NAME
-            for operation in operations
-        ]
+    if operations:
+        operation_names = [op.NAME for op in operations]
 
         selected_name = st.selectbox(
             "Operation",
@@ -139,290 +106,159 @@ with st.sidebar:
         )
 
         selected_operation = next(
-            operation
-            for operation in operations
-            if operation.NAME == selected_name
+            op for op in operations if op.NAME == selected_name
         )
-
     else:
-
-        st.error(
-            "No operations found."
-        )
-
-        selected_operation = None
-
-
-# ============================================================
-# ERRORS
-# ============================================================
+        st.error("No operations found. Check your operations folder.")
 
 if errors:
-
-    with st.expander(
-        "Some operations could not be loaded"
-    ):
-
+    with st.expander("Some operations could not be loaded"):
         for error in errors:
-
-            st.write(error)
+            st.error(error)
 
 
 # ============================================================
-# IMAGE
+# LOAD IMAGE
 # ============================================================
-
 if uploaded_file is None:
-
-    st.info(
-        "Upload an image from the sidebar to begin."
-    )
-
+    st.info("Upload an image from the sidebar to begin.")
     st.stop()
 
+try:
+    uploaded_bytes = uploaded_file.getvalue()
 
-image = Image.open(
-    uploaded_file
-).convert("RGB")
+    image = np.array(
+        Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
+    )
 
-image = np.array(image)
+except Exception as exc:
+    st.error(f"Could not read image: {exc}")
+    st.stop()
+
+image_id = hashlib.sha256(uploaded_bytes).hexdigest()
 
 
 # ============================================================
-# PARAMETERS
+# OPERATION PARAMETERS
 # ============================================================
-
 params = {}
 
-
 if selected_operation is not None:
+    st.subheader(selected_operation.NAME)
 
-    st.subheader(
-        selected_operation.NAME
-    )
+    definitions = getattr(selected_operation, "PARAMS", {})
 
-    parameter_definitions = getattr(
-        selected_operation,
-        "PARAMS",
-        {}
-    )
-
-    for parameter_name, definition in parameter_definitions.items():
-
-        parameter_type = definition["type"]
-
-        # --------------------------------
-        # SELECT
-        # --------------------------------
+    for name, definition in definitions.items():
+        parameter_type = definition.get("type")
 
         if parameter_type == "select":
+            options = definition["options"]
+            default = definition.get("default", options[0])
 
-            params[parameter_name] = st.selectbox(
-                definition["label"],
-                definition["options"],
-                index=definition["options"].index(
-                    definition.get(
-                        "default",
-                        definition["options"][0]
-                    )
-                )
+            params[name] = st.selectbox(
+                definition.get("label", name),
+                options,
+                index=options.index(default)
+                if default in options else 0,
+                key=f"{selected_operation.NAME}_{name}"
             )
 
-        # --------------------------------
-        # SLIDER
-        # --------------------------------
-
         elif parameter_type == "slider":
-
-            params[parameter_name] = st.slider(
-                definition["label"],
+            params[name] = st.slider(
+                definition.get("label", name),
                 min_value=definition["min"],
                 max_value=definition["max"],
                 value=definition.get(
-                    "default",
-                    definition["min"]
+                    "default", definition["min"]
                 ),
-                step=definition["step"]
+                step=definition.get("step", 1),
+                key=f"{selected_operation.NAME}_{name}"
             )
-
-        # --------------------------------
-        # CHECKBOX
-        # --------------------------------
 
         elif parameter_type == "checkbox":
-
-            params[parameter_name] = st.checkbox(
-                definition["label"],
-                value=definition.get(
-                    "default",
-                    False
-                )
+            params[name] = st.checkbox(
+                definition.get("label", name),
+                value=definition.get("default", False),
+                key=f"{selected_operation.NAME}_{name}"
             )
 
 
 # ============================================================
-# APPLY
+# IMAGE CONVERSION AND VALIDATION
 # ============================================================
+def to_display_array(output):
+    """Convert supported operation results into displayable arrays."""
 
-if st.button(
-    "Apply Operation",
-    type="primary"
-):
+    if isinstance(output, Image.Image):
+        output = np.array(output)
 
-    try:
-
-        result = selected_operation.apply(
-            image,
-            params
+    elif isinstance(output, (bytes, bytearray)):
+        output = np.array(
+            Image.open(io.BytesIO(output))
         )
 
-        st.session_state["result"] = result
+    array = np.asarray(output)
 
-    except Exception as e:
+    if array.size == 0:
+        raise ValueError("The operation returned an empty image.")
 
-        st.error(
-            f"Error while processing image: {e}"
+    if array.ndim not in (2, 3):
+        raise ValueError(
+            f"Unsupported image dimensions: {array.shape}"
         )
 
-
-# ============================================================
-# ORIGINAL IMAGE
-# ============================================================
-
-st.subheader("Original Image")
-
-st.image(
-    image,
-    use_container_width=True
-)
-# ============================================================
-# RESULT
-# ============================================================
-
-if "result" in st.session_state:
-
-    result = st.session_state["result"]
-
-    # ----------------------------------------
-    # Compression operation
-    # ----------------------------------------
-
-    if isinstance(result, dict):
-
-        processed_image = result["image"]
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            st.image(
-                image,
-                caption="Original",
-                use_container_width=True
-            )
-
-        with col2:
-
-            st.image(
-                processed_image,
-                caption="Processed / Reconstructed",
-                use_container_width=True
-            )
-
-        st.subheader("Compression Information")
-
-        info1, info2, info3 = st.columns(3)
-
-        with info1:
-
-            st.metric(
-                "Original Bits",
-                f"{result['original_bits']:,}"
-            )
-
-        with info2:
-
-            st.metric(
-                "Compressed Bits",
-                f"{result['compressed_bits']:,}"
-            )
-
-        with info3:
-
-            st.metric(
-                "Compression Ratio",
-                f"{result['compression_ratio']:.2f}"
-            )
-
-        st.write(
-            f"Unique intensity values: "
-            f"{result['unique_values']}"
+    if np.issubdtype(array.dtype, np.floating):
+        array = np.nan_to_num(
+            array, nan=0.0, posinf=255.0, neginf=0.0
         )
 
-    # ----------------------------------------
-    # Multiple images
-    # ----------------------------------------
+        if array.min() >= 0 and array.max() <= 1:
+            array = array * 255
 
-    elif isinstance(result, list):
+        array = np.clip(array, 0, 255).astype(np.uint8)
 
-        columns = st.columns(
-            len(result)
-        )
+    elif array.dtype != np.uint8:
+        array = np.clip(array, 0, 255).astype(np.uint8)
 
-        for i, output in enumerate(result):
-
-            with columns[i]:
-
-                st.image(
-                    output,
-                    caption=f"Result {i + 1}",
-                    use_container_width=True
-                )
-
-    # ----------------------------------------
-    # Normal image
-    # ----------------------------------------
-
-    else:
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            st.image(
-                image,
-                caption="Original",
-                use_container_width=True
+    if array.ndim == 3:
+        if array.shape[2] == 1:
+            array = array[:, :, 0]
+        elif array.shape[2] not in (3, 4):
+            raise ValueError(
+                f"Unsupported channel count: {array.shape}"
             )
 
-        with col2:
-
-            st.image(
-                result,
-                caption="Processed",
-                use_container_width=True
-            )
+    return array
 
 
-# ============================================================
-# HISTOGRAM FUNCTION
-# ============================================================
+def show_image(output, caption):
+    array = to_display_array(output)
 
-def plot_histogram(img, title):
-
-    fig, ax = plt.subplots(
-        figsize=(7, 3)
+    st.image(
+        array,
+        caption=caption,
+        use_container_width=True
     )
 
-    if len(img.shape) == 2:
 
+# ============================================================
+# HISTOGRAM
+# ============================================================
+def plot_histogram(img, title):
+    array = to_display_array(img)
+
+    fig, ax = plt.subplots(figsize=(7, 3))
+
+    if array.ndim == 2:
         ax.hist(
-            img.ravel(),
+            array.ravel(),
             bins=256,
             range=(0, 256)
         )
 
     else:
+        if array.shape[2] == 4:
+            array = array[:, :, :3]
 
         channels = [
             ("Red", 0),
@@ -430,14 +266,13 @@ def plot_histogram(img, title):
             ("Blue", 2)
         ]
 
-        for _, channel in channels:
-
+        for channel_name, channel_index in channels:
             ax.hist(
-                img[:, :, channel].ravel(),
+                array[:, :, channel_index].ravel(),
                 bins=256,
                 range=(0, 256),
                 alpha=0.5,
-                label=_
+                label=channel_name
             )
 
         ax.legend()
@@ -446,82 +281,227 @@ def plot_histogram(img, title):
     ax.set_xlabel("Intensity")
     ax.set_ylabel("Frequency")
 
-    st.pyplot(
-        fig,
-        clear_figure=True
-    )
+    fig.tight_layout()
+    st.pyplot(fig, clear_figure=True)
+    plt.close(fig)
 
 
 # ============================================================
-# HISTOGRAMS
+# APPLY OPERATION
 # ============================================================
+if selected_operation is not None:
+    if st.button("Apply Operation", type="primary"):
+        try:
+            with st.spinner("Processing image..."):
+                result = selected_operation.apply(
+                    image.copy(),
+                    params.copy()
+                )
 
-st.subheader("Histograms")
+            if result is None:
+                raise ValueError(
+                    "The operation returned no output."
+                )
 
-hist_col1, hist_col2 = st.columns(2)
+            # Validate results before storing them.
+            if isinstance(result, dict):
+                if "image" not in result:
+                    raise ValueError(
+                        "Dictionary result has no 'image' entry."
+                    )
 
-with hist_col1:
+                to_display_array(result["image"])
 
-    plot_histogram(
-        image,
-        "Original Histogram"
-    )
+            elif isinstance(result, list):
+                if not result:
+                    raise ValueError("The result list is empty.")
 
-with hist_col2:
+                for item in result:
+                    to_display_array(item)
 
-    if "result" in st.session_state:
+            else:
+                to_display_array(result)
 
-        result = st.session_state["result"]
+            st.session_state["dip_result"] = {
+                "image_id": image_id,
+                "operation": selected_operation.NAME,
+                "params": params.copy(),
+                "result": result
+            }
 
-        # Huffman / Shannon-Fano
-        if isinstance(result, dict):
+            st.success("Operation completed successfully!")
 
-            processed_image = result["image"]
+        except Exception as exc:
+            st.session_state.pop("dip_result", None)
 
-            plot_histogram(
+            st.error(
+                f"Error while processing image: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+# ============================================================
+# DISPLAY ORIGINAL IMAGE
+# ============================================================
+st.subheader("Original Image")
+show_image(image, "Original")
+
+
+# ============================================================
+# DISPLAY PROCESSED RESULT
+# ============================================================
+saved = st.session_state.get("dip_result")
+current_result = None
+
+if saved is not None:
+    if saved["image_id"] != image_id:
+        st.info("Click Apply Operation to process this image.")
+
+    elif (
+        selected_operation is not None
+        and saved["operation"] != selected_operation.NAME
+    ):
+        st.info("Click Apply Operation to update the result.")
+
+    elif saved["params"] != params:
+        st.info("Parameters changed. Click Apply Operation again.")
+
+    else:
+        current_result = saved["result"]
+
+
+if current_result is not None:
+    st.subheader("Processed Result")
+
+    # Compression operations return a dictionary.
+    if isinstance(current_result, dict):
+        processed_image = current_result["image"]
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            show_image(image, "Original")
+
+        with col2:
+            show_image(
                 processed_image,
-                "Processed Histogram"
+                "Processed / Reconstructed"
             )
 
-        # Normal image result
-        elif not isinstance(result, list):
+        # Display compression information when available.
+        if all(
+            key in current_result
+            for key in (
+                "original_bits",
+                "compressed_bits",
+                "compression_ratio"
+            )
+        ):
+            st.subheader("Compression Information")
 
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric(
+                "Original Bits",
+                f"{current_result['original_bits']:,}"
+            )
+
+            col2.metric(
+                "Compressed Bits",
+                f"{current_result['compressed_bits']:,}"
+            )
+
+            col3.metric(
+                "Compression Ratio",
+                f"{current_result['compression_ratio']:.2f}"
+            )
+
+            if "unique_values" in current_result:
+                st.write(
+                    "Unique intensity values: "
+                    f"{current_result['unique_values']}"
+                )
+
+    # Operations returning multiple images.
+    elif isinstance(current_result, list):
+        columns = st.columns(min(len(current_result), 3))
+
+        for index, output in enumerate(current_result):
+            with columns[index % len(columns)]:
+                show_image(output, f"Result {index + 1}")
+
+    # Normal image-processing operations.
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            show_image(image, "Original")
+
+        with col2:
+            show_image(current_result, "Processed")
+
+
+    # ========================================================
+    # HISTOGRAMS
+    # ========================================================
+    st.subheader("Histograms")
+
+    hist_col1, hist_col2 = st.columns(2)
+
+    with hist_col1:
+        plot_histogram(image, "Original Histogram")
+
+    with hist_col2:
+        if isinstance(current_result, dict):
             plot_histogram(
-                result,
+                current_result["image"],
+                "Processed Histogram"
+            )
+
+        elif isinstance(current_result, list):
+            st.caption(
+                "Multiple outputs returned; "
+                "processed histogram omitted."
+            )
+
+        else:
+            plot_histogram(
+                current_result,
                 "Processed Histogram"
             )
 
 
-# ============================================================
-# DOWNLOAD RESULT
-# ============================================================
+    # ========================================================
+    # DOWNLOAD RESULT
+    # ========================================================
+    if not isinstance(current_result, list):
+        try:
+            if isinstance(current_result, dict):
+                output = current_result["image"]
+            else:
+                output = current_result
 
-if "result" in st.session_state:
+            output_array = to_display_array(output)
 
-    result = st.session_state["result"]
+            output_image = Image.fromarray(output_array)
 
-    # Huffman / Shannon-Fano
-    if isinstance(result, dict):
+            buffer = io.BytesIO()
+            output_image.save(buffer, format="PNG")
 
-        result = result["image"]
+            st.download_button(
+                label="Download Result",
+                data=buffer.getvalue(),
+                file_name="processed_image.png",
+                mime="image/png"
+            )
 
-    # Normal image
-    if not isinstance(result, list):
+        except Exception as exc:
+            st.warning(
+                f"Could not prepare the download: {exc}"
+            )
 
-        output_image = Image.fromarray(
-            result
-        )
-
-        buffer = io.BytesIO()
-
-        output_image.save(
-            buffer,
-            format="PNG"
-        )
-
-        st.download_button(
-            label="Download Result",
-            data=buffer.getvalue(),
-            file_name="processed_image.png",
-            mime="image/png"
-        )
+else:
+    st.info(
+        "Choose an operation and parameters, "
+        "then click Apply Operation to see the result."
+    )
